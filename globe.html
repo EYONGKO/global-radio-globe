@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Radio Globe</title>
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; background: linear-gradient(180deg, #0a2342 0%, #1e3c72 100%); }
+    #globeViz { width: 100vw; height: 100vh; }
+    .station-label {
+      color: #fff;
+      background: rgba(0,0,0,0.85);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 15px;
+      pointer-events: none;
+      position: absolute;
+      z-index: 10;
+      display: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    #debugMsg {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      background: rgba(0,0,0,0.5);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      z-index: 20;
+    }
+  </style>
+</head>
+<body>
+  <div id="globeViz"></div>
+  <div id="stationLabel" class="station-label"></div>
+  <div id="debugMsg">Globe loaded</div>
+  <script src="https://unpkg.com/three@0.150.1/build/three.min.js"></script>
+  <script src="https://unpkg.com/globe.gl@2.32.6/dist/globe.gl.min.js"></script>
+  <script>
+    const globe = Globe()(document.getElementById('globeViz'))
+      .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+      .backgroundColor('rgba(10,35,66,1)')
+      .pointOfView({ lat: 20, lng: 0, altitude: 2 }, 0)
+      .pointsMerge(true)
+      .pointColor(point => {
+        if (highlightedStationUUID && point.stationuuid === highlightedStationUUID) {
+          return '#FF6B6B'; // Highlight color
+        }
+        return point.color || '#00ffea';
+      })
+      .pointRadius(point => {
+        if (highlightedStationUUID && point.stationuuid === highlightedStationUUID) {
+          return 1.8; // Larger for highlight
+        }
+        return point.size || 1.1;
+      })
+      .pointAltitude(0)
+      .onPointHover(handleHover)
+      .onPointClick(handleClick);
+
+    let stations = [
+      // Default marker for debug
+      { lat: 0, lng: 0, name: 'Debug Station', country: 'Equator', url: '', color: '#00ffea', size: 1.1 }
+    ];
+    globe.pointsData(stations);
+
+    let labelDiv = document.getElementById('stationLabel');
+    let debugMsg = document.getElementById('debugMsg');
+    let highlightedStationUUID = null;
+
+    function handleHover(point, event) {
+      if (point) {
+        labelDiv.innerHTML = `<b>${point.name}</b><br>${point.country}`;
+        labelDiv.style.left = event.clientX + 10 + 'px';
+        labelDiv.style.top = event.clientY - 10 + 'px';
+        labelDiv.style.display = 'block';
+      } else {
+        labelDiv.style.display = 'none';
+      }
+    }
+
+    function handleClick(point) {
+      console.log('handleClick', point);
+      if (point) {
+        globe.pointOfView({ lat: point.lat, lng: point.lng, altitude: 2 }, 1000); // animate to station
+      }
+      if (window.ReactNativeWebView && point) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'station', station: point }));
+      }
+    }
+
+    window.handleMessage = function(event) {
+      try {
+        if (typeof event.data !== 'string') return; // Only handle string messages
+        const data = JSON.parse(event.data);
+        debugMsg.innerText = 'Message received: ' + event.data;
+        console.log('Received message from RN:', data);
+        if (data.type === 'stations') {
+          console.log('Received stations:', data.stations.length, data.stations.slice(0, 3));
+          debugMsg.innerText = 'Stations loaded: ' + data.stations.length;
+          stations = data.stations.map(station => ({
+            lat: parseFloat(station.latitude),
+            lng: parseFloat(station.longitude),
+            name: station.name,
+            country: station.country,
+            url: station.url_resolved || station.url,
+            stationuuid: station.stationuuid,
+            color: '#00ffea',
+            size: 1.1
+          }));
+          globe.pointsData(stations);
+          console.log('Markers rendered:', stations.length, stations.slice(0, 3));
+        } else if (data.type === 'animateTo') {
+          console.log('Globe animateTo', data);
+          globe.pointOfView({ lat: data.lat, lng: data.lng, altitude: 2 }, 1000);
+        } else if (data.type === 'zoom') {
+          console.log('Globe zoom', data);
+          const pov = globe.getPointOfView();
+          globe.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: data.altitude }, 600);
+        } else if (data.type === 'reset') {
+          console.log('Globe reset');
+          globe.pointOfView({ lat: 20, lng: 0, altitude: 2 }, 1000);
+        } else if (data.type === 'highlight') {
+          highlightedStationUUID = data.stationuuid;
+          globe.pointsData(stations); // Refresh globe to update highlight
+        }
+      } catch (e) {
+        debugMsg.innerText = 'Error loading stations: ' + (e && e.message ? e.message : e);
+        console.log('Error in message event:', e);
+      }
+    }
+
+    // Periodically send globe center to React Native
+    setInterval(() => {
+      if (window.ReactNativeWebView && globe.getPointOfView) {
+        const pov = globe.getPointOfView();
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'center', center: pov }));
+      }
+    }, 2000);
+  </script>
+</body>
+</html> 
