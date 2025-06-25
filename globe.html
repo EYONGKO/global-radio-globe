@@ -39,36 +39,42 @@
   <script src="https://unpkg.com/three@0.150.1/build/three.min.js"></script>
   <script src="https://unpkg.com/globe.gl@2.32.6/dist/globe.gl.min.js"></script>
   <script>
+    // Add this to ensure messages from React Native are received
+    window.addEventListener('message', function(event) {
+      if (window.handleMessage) {
+        window.handleMessage({ data: event.data });
+      }
+    });
+
     const globe = Globe()(document.getElementById('globeViz'))
       .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
       .backgroundColor('rgba(10,35,66,1)')
-      .pointOfView({ lat: 20, lng: 0, altitude: 2 }, 0)
+      .pointOfView({ lat: 20, lng: 0, altitude: 3.0 }, 0)
       .pointsMerge(true)
       .pointColor(point => {
-        if (highlightedStationUUID && point.stationuuid === highlightedStationUUID) {
-          return '#FF6B6B'; // Highlight color
-        }
-        return point.color || '#00ffea';
+        return highlightedStationUUIDs.includes(point.stationuuid) ? '#FF6B6B' : (point.color || '#39FF14');
       })
       .pointRadius(point => {
-        if (highlightedStationUUID && point.stationuuid === highlightedStationUUID) {
-          return 1.8; // Larger for highlight
-        }
-        return point.size || 1.1;
+        return highlightedStationUUIDs.includes(point.stationuuid) ? 1.8 : (point.size || 1.1);
       })
       .pointAltitude(0)
       .onPointHover(handleHover)
       .onPointClick(handleClick);
 
+    const controls = globe.controls();
+    controls.enableZoom = true; // allow scroll zoom
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.4;
+
     let stations = [
       // Default marker for debug
-      { lat: 0, lng: 0, name: 'Debug Station', country: 'Equator', url: '', color: '#00ffea', size: 1.1 }
+      { lat: 0, lng: 0, name: 'Debug Station', country: 'Equator', url: '', color: '#39FF14', size: 1.1 }
     ];
     globe.pointsData(stations);
 
     let labelDiv = document.getElementById('stationLabel');
     let debugMsg = document.getElementById('debugMsg');
-    let highlightedStationUUID = null;
+    let highlightedStationUUIDs = [];
 
     function handleHover(point, event) {
       if (point) {
@@ -87,7 +93,17 @@
         globe.pointOfView({ lat: point.lat, lng: point.lng, altitude: 2 }, 1000); // animate to station
       }
       if (window.ReactNativeWebView && point) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'station', station: point }));
+        // Ensure all required fields are present
+        const station = {
+          ...point,
+          url_resolved: point.url_resolved || point.url,
+          url: point.url_resolved || point.url,
+          stationuuid: point.stationuuid || point.name || Math.random().toString(36).substr(2, 9),
+          name: point.name,
+          country: point.country
+        };
+        console.log('Sending station to React Native:', station);
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'station', station }));
       }
     }
 
@@ -95,39 +111,56 @@
       try {
         if (typeof event.data !== 'string') return; // Only handle string messages
         const data = JSON.parse(event.data);
-        debugMsg.innerText = 'Message received: ' + event.data;
+        // debugMsg.innerText = 'Message received: ' + event.data; // Remove debug popup
         console.log('Received message from RN:', data);
         if (data.type === 'stations') {
           console.log('Received stations:', data.stations.length, data.stations.slice(0, 3));
-          debugMsg.innerText = 'Stations loaded: ' + data.stations.length;
+          // debugMsg.innerText = 'Stations loaded: ' + data.stations.length;
           stations = data.stations.map(station => ({
             lat: parseFloat(station.latitude),
             lng: parseFloat(station.longitude),
             name: station.name,
             country: station.country,
             url: station.url_resolved || station.url,
+            url_resolved: station.url_resolved || station.url,
             stationuuid: station.stationuuid,
-            color: '#00ffea',
+            color: '#39FF14',
             size: 1.1
           }));
           globe.pointsData(stations);
           console.log('Markers rendered:', stations.length, stations.slice(0, 3));
         } else if (data.type === 'animateTo') {
-          console.log('Globe animateTo', data);
-          globe.pointOfView({ lat: data.lat, lng: data.lng, altitude: 2 }, 1000);
+          const lat = Number(data.lat);
+          const lng = Number(data.lng);
+          const altitude = (typeof data.altitude === 'number' ? data.altitude : 2);
+          console.log('Globe animateTo received:', lat, lng, altitude);
+          globe.pointOfView({ lat, lng, altitude }, 1000);
         } else if (data.type === 'zoom') {
           console.log('Globe zoom', data);
           const pov = globe.getPointOfView();
           globe.pointOfView({ lat: pov.lat, lng: pov.lng, altitude: data.altitude }, 600);
         } else if (data.type === 'reset') {
           console.log('Globe reset');
-          globe.pointOfView({ lat: 20, lng: 0, altitude: 2 }, 1000);
+          globe.pointOfView({ lat: 20, lng: 0, altitude: 3.0 }, 1000);
         } else if (data.type === 'highlight') {
-          highlightedStationUUID = data.stationuuid;
+          highlightedStationUUIDs = [data.stationuuid];
           globe.pointsData(stations); // Refresh globe to update highlight
+        } else if (data.type === 'highlightMultiple') {
+          highlightedStationUUIDs = data.stationuuids || [];
+          globe.pointsData(stations); // Refresh globe to update highlight
+        } else if (data.type === 'lock') {
+          console.log('Globe lock', data.locked);
+          controls.enableZoom = !data.locked;
+          controls.enableRotate = !data.locked;
+          controls.enablePan = !data.locked;
+          controls.autoRotate = !data.locked;
+        } else if (data.type === 'showNames') {
+          console.log('Show names', data.show);
+          globe.showAtmosphere(!data.show); // a little visual feedback
+          globe.pointLabel(p => data.show ? p.name : '');
         }
       } catch (e) {
-        debugMsg.innerText = 'Error loading stations: ' + (e && e.message ? e.message : e);
+        // debugMsg.innerText = 'Error loading stations: ' + (e && e.message ? e.message : e);
         console.log('Error in message event:', e);
       }
     }
